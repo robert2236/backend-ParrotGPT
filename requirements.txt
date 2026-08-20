@@ -12,3 +12,4 @@ langchain-ollama
 google-genai
 chromadb
 python-multipart
+psutil

@@ -2,6 +2,8 @@ import asyncio
 import os
 import tempfile
 import uuid
+import shutil
+import psutil
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -80,6 +82,32 @@ def _procesar_pdf_sync(ruta: str, sid: str) -> tuple[list, list]:
 @app.on_event("startup")
 def startup():
     init_db()
+
+@app.get("/api/system-status")
+def system_status():
+    # 1. Uso de Memoria RAM
+    memory_info = psutil.virtual_memory()
+    
+    # 2. Uso de Disco
+    disk_info = shutil.disk_usage("/")
+    
+    # 3. Datos del Proceso Actual
+    process = psutil.Process(os.getpid())
+    process_ram_mb = process.memory_info().rss / (1024 * 1024)
+
+    return {
+        "ram": {
+            "proceso_actual_mb": round(process_ram_mb, 2),
+            "ram_total_mb": round(memory_info.total / (1024 * 1024), 2),
+            "ram_usada_mb": round(memory_info.used / (1024 * 1024), 2),
+            "porcentaje_ram_sistema": memory_info.percent
+        },
+        "disco": {
+            "total_gb": round(disk_info.total / (1024**3), 2),
+            "usado_gb": round(disk_info.used / (1024**3), 2),
+            "libre_gb": round(disk_info.free / (1024**3), 2)
+        }
+    }
 
 
 @app.get("/api/health")
