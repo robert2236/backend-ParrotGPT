@@ -52,7 +52,7 @@ from src.vector_store import agregar_documentos
 from src.vector_store import buscar as buscar_vectorial
 from src.vector_store import obtener_retriever
 
-app = FastAPI(title="Laboratorio IA - API RAG")
+app = FastAPI(title="API RAG ParrotGPT")
 
 app.add_middleware(
     CORSMiddleware,

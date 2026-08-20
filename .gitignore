@@ -17,3 +17,6 @@ thumbs.db
 .pytest_cache/
 dist/
 build/
+.venv/
+*.db
+__pycache__/

@@ -9,7 +9,7 @@ from src.embeddings import obtener_modelo
 from src.loader import cargar_pdf
 from src.splitter import fragmentar
 
-st.set_page_config(page_title="Laboratorio IA", page_icon="", layout="centered")
+st.set_page_config(page_title="ParrotGPT", page_icon="", layout="centered")
 
 TAMANO_MAXIMO_MB = 50
 TAMANO_MAXIMO_BYTES = TAMANO_MAXIMO_MB * 1024 * 1024

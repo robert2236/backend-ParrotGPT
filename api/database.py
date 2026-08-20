@@ -1,11 +1,15 @@
+import os
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 from src.config import RAIZ
 
 RUTA_SQLITE = RAIZ / "data" / "historial.db"
+
+
+RUTA_SQLITE.parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_engine(f"sqlite:///{RUTA_SQLITE}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -30,7 +34,11 @@ class Sesion(Base):
     titulo = Column(String, default="Nueva conversación")
     pinned = Column(Boolean, default=False)
     creado_en = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    actualizado_en = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    actualizado_en = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 
 class Preferencia(Base):
