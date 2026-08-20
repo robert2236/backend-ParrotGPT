@@ -6,7 +6,7 @@ import shutil
 import psutil
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.database import (
@@ -44,6 +44,7 @@ from api.schemas import (
     NotaResponse,
     UpdateSessionBody,
 )
+from api.auth import get_current_user_id
 from src.config import RETRIEVER_K
 from src.embeddings import obtener_modelo
 from src.llm import obtener_llm
@@ -112,15 +113,17 @@ def system_status():
 
 @app.get("/api/health")
 def health():
+    llm = obtener_llm()
+    embeddings_model = obtener_modelo()
     return {
         "status": "ok",
-        "modelo_llm": "llama3.2",
-        "embeddings": "paraphrase-multilingual-MiniLM-L12-v2",
+        "modelo_llm": llm.model_name, # Asumiendo que el objeto LLM tiene un atributo 'model_name'
+        "embeddings": embeddings_model.model_name, # Asumiendo que el objeto Embeddings tiene un atributo 'model_name'
     }
 
 
 @app.post("/api/ask", response_model=AskResponse)
-def ask(req: AskRequest):
+def ask(req: AskRequest, user_id: str = Depends(get_current_user_id)):
     from src.vector_store import cargar_bd
     bd = cargar_bd()
     try:
@@ -180,8 +183,8 @@ Respuesta:"""
 
 
 @app.post("/api/buscar", response_model=BuscarResponse)
-def buscar(req: BuscarRequest):
-    docs = buscar_vectorial(req.pregunta, k=req.k)
+def buscar(req: BuscarRequest, user_id: str = Depends(get_current_user_id)):
+    docs = buscar_vectorial(req.pregunta, k=req.k, user_id=user_id)
     resultados = [{"contenido": d.page_content, "metadata": d.metadata} for d in docs]
     return BuscarResponse(resultados=resultados)
 
@@ -191,11 +194,12 @@ async def upload_pdf(
     file: UploadFile = File(...),
     pregunta: str = Form(""),
     session_id: str = Form(""),
+    user_id: str = Depends(get_current_user_id),
 ):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "Solo se aceptan archivos PDF (extensión .pdf)")
 
-    sid = session_id or str(uuid.uuid4())
+    sid = session_id or user_id
 
     content = await file.read()
     if len(content) > TAMANO_MAXIMO_BYTES:
@@ -270,7 +274,35 @@ Respuesta:"""
 
 
 @app.get("/api/upload/{session_id}")
-def estado_upload(session_id: str):
+def estado_upload(session_id: str, user_id: str = Depends(get_current_user_id)):
+    from src.vector_store import cargar_bd
+    bd = cargar_bd()
+    resultados = bd.get(where={"session_id": session_id, "user_id": user_id})
+    disponible = len(resultados.get("ids", [])) > 0
+    nombre_archivo = None
+    paginas = None
+    fragmentos = None
+    if disponible:
+        metadatas = resultados.get("metadatas", [])
+        if metadatas:
+            nombre_archivo = metadatas[0].get("source", "documento.pdf")
+            fragmentos = len(metadatas)
+            paginas_unicas = set()
+            for m in metadatas:
+                page = m.get("page")
+                if page is not None:
+                    paginas_unicas.add(page)
+            paginas = len(paginas_unicas)
+    return {
+        "disponible": disponible,
+        "nombre_archivo": nombre_archivo,
+        "paginas": paginas,
+        "fragmentos": fragmentos,
+    }
+
+
+@app.get("/test/api/upload/{session_id}")
+def estado_upload_test(session_id: str):
     from src.vector_store import cargar_bd
     bd = cargar_bd()
     resultados = bd.get(where={"session_id": session_id})
@@ -297,9 +329,11 @@ def estado_upload(session_id: str):
     }
 
 
+# --- SESIONES Y HISTORIAL ---
+
 @app.get("/api/sessions")
-def listar_sesiones(q: str = ""):
-    sesiones = buscar_sesiones(query=q)
+def listar_sesiones(q: str = "", user_id: str = Depends(get_current_user_id)):
+    sesiones = buscar_sesiones(query=q, user_id=user_id)
     return [
         {
             "session_id": s.session_id,
@@ -313,26 +347,26 @@ def listar_sesiones(q: str = ""):
 
 
 @app.delete("/api/sessions/{session_id}", status_code=204)
-def borrar_sesion(session_id: str):
-    eliminar_sesion(session_id)
+def borrar_sesion(session_id: str, user_id: str = Depends(get_current_user_id)):
+    eliminar_sesion(session_id, user_id=user_id)
 
 
 @app.patch("/api/sessions/{session_id}")
-def editar_sesion(session_id: str, body: UpdateSessionBody):
+def editar_sesion(session_id: str, body: UpdateSessionBody, user_id: str = Depends(get_current_user_id)):
     if body.titulo:
-        actualizar_titulo_sesion(session_id, body.titulo)
+        actualizar_titulo_sesion(session_id, body.titulo, user_id=user_id)
     return {"mensaje": "Actualizado"}
 
 
 @app.patch("/api/sessions/{session_id}/pin")
-def pin_sesion(session_id: str):
-    pinned = toggle_pin_sesion(session_id)
+def pin_sesion(session_id: str, user_id: str = Depends(get_current_user_id)):
+    pinned = toggle_pin_sesion(session_id, user_id=user_id)
     return {"pinned": pinned}
 
 
 @app.get("/api/historial/{session_id}", response_model=HistorialResponse)
-def obtener_historial(session_id: str):
-    mensajes = get_history(session_id)
+def obtener_historial(session_id: str, user_id: str = Depends(get_current_user_id)):
+    mensajes = get_history(session_id, user_id=user_id)
     items = [
         HistorialItem(rol=m.rol, contenido=m.contenido, creado_en=str(m.creado_en))
         for m in mensajes
@@ -341,10 +375,12 @@ def obtener_historial(session_id: str):
 
 
 @app.delete("/api/historial/{session_id}")
-def eliminar_historial(session_id: str):
-    clear_history(session_id)
+def eliminar_historial(session_id: str, user_id: str = Depends(get_current_user_id)):
+    clear_history(session_id, user_id=user_id)
     return {"mensaje": f"Historial de '{session_id}' eliminado"}
 
+
+# --- PREFERENCIAS ---
 
 @app.get("/api/theme")
 def obtener_tema():
@@ -359,8 +395,10 @@ def guardar_tema(body: dict):
     return {"theme": theme}
 
 
+# --- CARPETAS ---
+
 @app.get("/api/carpetas", response_model=list[CarpetaResponse])
-def obtener_carpetas():
+def obtener_carpetas(user_id: str = Depends(get_current_user_id)):
     return [
         CarpetaResponse(id=c.id, nombre=c.nombre, creado_en=str(c.creado_en))
         for c in listar_carpetas()
@@ -368,31 +406,39 @@ def obtener_carpetas():
 
 
 @app.post("/api/carpetas", response_model=CarpetaResponse)
-def nueva_carpeta(body: CarpetaBody):
+def nueva_carpeta(body: CarpetaBody, user_id: str = Depends(get_current_user_id)):
     c = crear_carpeta(body.nombre)
     return CarpetaResponse(id=c.id, nombre=c.nombre, creado_en=str(c.creado_en))
 
 
 @app.delete("/api/carpetas/{carpeta_id}", status_code=204)
-def borrar_carpeta(carpeta_id: int):
+def borrar_carpeta(carpeta_id: int, user_id: str = Depends(get_current_user_id)):
     eliminar_carpeta(carpeta_id)
 
 
+# --- NOTAS ---
+
 @app.get("/api/notas", response_model=list[NotaResponse])
-def obtener_notas(carpeta_id: int | None = None, q: str = ""):
+def obtener_notas(carpeta_id: int | None = None, q: str = "", user_id: str = Depends(get_current_user_id)):
     return [
         NotaResponse(
             id=n.id, session_id=n.session_id, carpeta_id=n.carpeta_id,
             titulo=n.titulo, contenido=n.contenido,
             creado_en=str(n.creado_en), actualizado_en=str(n.actualizado_en),
         )
-        for n in listar_notas(carpeta_id=carpeta_id, query=q)
+        for n in listar_notas(carpeta_id=carpeta_id, query=q, user_id=user_id)
     ]
 
 
 @app.post("/api/notas", response_model=NotaResponse)
-def nueva_nota(body: CrearNotaBody):
-    n = crear_nota(titulo=body.titulo, contenido=body.contenido, session_id=body.session_id, carpeta_id=body.carpeta_id)
+def nueva_nota(body: CrearNotaBody, user_id: str = Depends(get_current_user_id)):
+    n = crear_nota(
+        titulo=body.titulo, 
+        contenido=body.contenido, 
+        session_id=body.session_id, 
+        carpeta_id=body.carpeta_id,
+        user_id=user_id  # <--- Asocia la nota creada al usuario autenticado
+    )
     return NotaResponse(
         id=n.id, session_id=n.session_id, carpeta_id=n.carpeta_id,
         titulo=n.titulo, contenido=n.contenido,
@@ -401,8 +447,8 @@ def nueva_nota(body: CrearNotaBody):
 
 
 @app.get("/api/notas/{nota_id}", response_model=NotaResponse)
-def obtener_nota_endpoint(nota_id: int):
-    n = obtener_nota(nota_id)
+def obtener_nota_endpoint(nota_id: int, user_id: str = Depends(get_current_user_id)):
+    n = obtener_nota(nota_id, user_id=user_id)
     if not n:
         raise HTTPException(404, "Nota no encontrada")
     return NotaResponse(
@@ -413,8 +459,8 @@ def obtener_nota_endpoint(nota_id: int):
 
 
 @app.put("/api/notas/{nota_id}", response_model=NotaResponse)
-def editar_nota(nota_id: int, body: ActualizarNotaBody):
-    n = actualizar_nota(nota_id, titulo=body.titulo, contenido=body.contenido)
+def editar_nota(nota_id: int, body: ActualizarNotaBody, user_id: str = Depends(get_current_user_id)):
+    n = actualizar_nota(nota_id, titulo=body.titulo, contenido=body.contenido, user_id=user_id)
     if not n:
         raise HTTPException(404, "Nota no encontrada")
     return NotaResponse(
@@ -425,5 +471,5 @@ def editar_nota(nota_id: int, body: ActualizarNotaBody):
 
 
 @app.delete("/api/notas/{nota_id}", status_code=204)
-def borrar_nota(nota_id: int):
-    eliminar_nota(nota_id)
+def borrar_nota(nota_id: int, user_id: str = Depends(get_current_user_id)):
+    eliminar_nota(nota_id, user_id=user_id)

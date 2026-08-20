@@ -44,6 +44,8 @@ def obtener_retriever(k: int = RETRIEVER_K, filtro: dict | None = None):
     return bd.as_retriever(search_kwargs=kwargs)
 
 
-def buscar(pregunta: str, k: int = 1):
+def buscar(pregunta: str, k: int = 1, user_id: str | None = None):
     bd = cargar_bd()
+    if user_id:
+        return bd.similarity_search(query=pregunta, k=k, filter={"session_id": user_id})
     return bd.similarity_search(pregunta, k=k)

@@ -14,6 +14,7 @@ class AskResponse(BaseModel):
 class BuscarRequest(BaseModel):
     pregunta: str
     k: int = 3
+    user_id: str
 
 
 class BuscarResponse(BaseModel):

@@ -13,3 +13,7 @@ google-genai
 chromadb
 python-multipart
 psutil
+pyjwt
+requests
+cryptography
+pyjwt[crypto]

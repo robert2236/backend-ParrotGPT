@@ -1,17 +1,26 @@
 import os
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine, text
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 from src.config import RAIZ
 
-RUTA_SQLITE = RAIZ / "data" / "historial.db"
+# 1. Obtener la URL desde variables de entorno
+DATABASE_URL = os.getenv("DATABASE_URL")
 
+if DATABASE_URL:
+    # Render entrega URLs con 'postgres://', pero SQLAlchemy requiere 'postgresql://'
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgres://", 1)
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    engine = create_engine(DATABASE_URL)
+else:
+    # Fallback local usando SQLite
+    RUTA_SQLITE = RAIZ / "data" / "historial.db"
+    RUTA_SQLITE.parent.mkdir(parents=True, exist_ok=True)
+    engine = create_engine(f"sqlite:///{RUTA_SQLITE}", connect_args={"check_same_thread": False})
 
-RUTA_SQLITE.parent.mkdir(parents=True, exist_ok=True)
-
-engine = create_engine(f"sqlite:///{RUTA_SQLITE}", connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -21,9 +30,10 @@ class Mensaje(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String, index=True)
+    user_id = Column(String, index=True, nullable=True)  # ID de Clerk
     rol = Column(String)
     contenido = Column(Text)
-    creado_en = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    creado_en = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class Sesion(Base):
@@ -31,11 +41,12 @@ class Sesion(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String, unique=True, index=True)
+    user_id = Column(String, index=True, nullable=True)  # ID de Clerk
     titulo = Column(String, default="Nueva conversación")
     pinned = Column(Boolean, default=False)
-    creado_en = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    creado_en = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     actualizado_en = Column(
-        DateTime,
+        DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
@@ -53,7 +64,7 @@ class Carpeta(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     nombre = Column(String, default="General")
-    creado_en = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    creado_en = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     notas = relationship("Nota", back_populates="carpeta", cascade="all, delete-orphan")
 
@@ -62,13 +73,14 @@ class Nota(Base):
     __tablename__ = "notas"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=True)  # ID de Clerk
     session_id = Column(String, nullable=True, index=True)
     carpeta_id = Column(Integer, ForeignKey("carpetas.id"), default=1)
     titulo = Column(String, default="Sin título")
     contenido = Column(Text, default="")
-    creado_en = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    creado_en = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     actualizado_en = Column(
-        DateTime,
+        DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
@@ -78,13 +90,24 @@ class Nota(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    
+    # Manejo dinámico de columas en tablas según el motor (SQLite o PostgreSQL)
     try:
-        from sqlalchemy import text
         with engine.connect() as conn:
-            conn.execute(text("ALTER TABLE sesiones ADD COLUMN pinned BOOLEAN DEFAULT 0"))
+            if engine.name == "sqlite":
+                conn.execute(text("ALTER TABLE sesiones ADD COLUMN pinned BOOLEAN DEFAULT 0"))
+                conn.execute(text("ALTER TABLE sesiones ADD COLUMN user_id VARCHAR"))
+                conn.execute(text("ALTER TABLE mensajes ADD COLUMN user_id VARCHAR"))
+                conn.execute(text("ALTER TABLE notas ADD COLUMN user_id VARCHAR"))
+            else:
+                conn.execute(text("ALTER TABLE sesiones ADD COLUMN IF NOT EXISTS pinned BOOLEAN DEFAULT FALSE"))
+                conn.execute(text("ALTER TABLE sesiones ADD COLUMN IF NOT EXISTS user_id VARCHAR"))
+                conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS user_id VARCHAR"))
+                conn.execute(text("ALTER TABLE notas ADD COLUMN IF NOT EXISTS user_id VARCHAR"))
             conn.commit()
     except Exception:
         pass
+
     db = SessionLocal()
     try:
         existe = db.query(Carpeta).filter(Carpeta.nombre == "General").first()
@@ -95,68 +118,84 @@ def init_db():
         db.close()
 
 
-def add_message(session_id: str, rol: str, contenido: str):
+def add_message(session_id: str, rol: str, contenido: str, user_id: str | None = None):
     db = SessionLocal()
-    msg = Mensaje(session_id=session_id, rol=rol, contenido=contenido)
+    msg = Mensaje(session_id=session_id, rol=rol, contenido=contenido, user_id=user_id)
     db.add(msg)
     db.commit()
     db.close()
 
 
-def get_history(session_id: str, limit: int = 20):
+def get_history(session_id: str, limit: int = 20, user_id: str | None = None):
     db = SessionLocal()
-    msgs = (
-        db.query(Mensaje)
-        .filter(Mensaje.session_id == session_id)
-        .order_by(Mensaje.creado_en.asc())
-        .limit(limit)
-        .all()
-    )
+    q = db.query(Mensaje).filter(Mensaje.session_id == session_id)
+    if user_id:
+        q = q.filter(Mensaje.user_id == user_id)
+    msgs = q.order_by(Mensaje.creado_en.asc()).limit(limit).all()
     db.close()
     return msgs
 
 
-def clear_history(session_id: str):
+def clear_history(session_id: str, user_id: str | None = None):
     db = SessionLocal()
-    db.query(Mensaje).filter(Mensaje.session_id == session_id).delete()
-    db.query(Sesion).filter(Sesion.session_id == session_id).delete()
+    q_msg = db.query(Mensaje).filter(Mensaje.session_id == session_id)
+    q_ses = db.query(Sesion).filter(Sesion.session_id == session_id)
+    if user_id:
+        q_msg = q_msg.filter(Mensaje.user_id == user_id)
+        q_ses = q_ses.filter(Sesion.user_id == user_id)
+    q_msg.delete(synchronize_session=False)
+    q_ses.delete(synchronize_session=False)
     db.commit()
     db.close()
 
 
-def crear_o_actualizar_sesion(session_id: str, titulo: str):
+def crear_o_actualizar_sesion(session_id: str, titulo: str, user_id: str | None = None):
     db = SessionLocal()
-    sesion = db.query(Sesion).filter(Sesion.session_id == session_id).first()
+    q = db.query(Sesion).filter(Sesion.session_id == session_id)
+    if user_id:
+        q = q.filter(Sesion.user_id == user_id)
+    sesion = q.first()
     now = datetime.now(timezone.utc)
     if sesion:
         sesion.actualizado_en = now
     else:
-        sesion = Sesion(session_id=session_id, titulo=titulo[:100])
+        sesion = Sesion(session_id=session_id, titulo=titulo[:100], user_id=user_id)
         db.add(sesion)
     db.commit()
     db.close()
 
 
-def eliminar_sesion(session_id: str):
+def eliminar_sesion(session_id: str, user_id: str | None = None):
     db = SessionLocal()
-    db.query(Mensaje).filter(Mensaje.session_id == session_id).delete()
-    db.query(Sesion).filter(Sesion.session_id == session_id).delete()
+    q_msg = db.query(Mensaje).filter(Mensaje.session_id == session_id)
+    q_ses = db.query(Sesion).filter(Sesion.session_id == session_id)
+    if user_id:
+        q_msg = q_msg.filter(Mensaje.user_id == user_id)
+        q_ses = q_ses.filter(Sesion.user_id == user_id)
+    q_msg.delete(synchronize_session=False)
+    q_ses.delete(synchronize_session=False)
     db.commit()
     db.close()
 
 
-def actualizar_titulo_sesion(session_id: str, titulo: str):
+def actualizar_titulo_sesion(session_id: str, titulo: str, user_id: str | None = None):
     db = SessionLocal()
-    sesion = db.query(Sesion).filter(Sesion.session_id == session_id).first()
+    q = db.query(Sesion).filter(Sesion.session_id == session_id)
+    if user_id:
+        q = q.filter(Sesion.user_id == user_id)
+    sesion = q.first()
     if sesion:
         sesion.titulo = titulo[:100]
         db.commit()
     db.close()
 
 
-def toggle_pin_sesion(session_id: str) -> bool:
+def toggle_pin_sesion(session_id: str, user_id: str | None = None) -> bool:
     db = SessionLocal()
-    sesion = db.query(Sesion).filter(Sesion.session_id == session_id).first()
+    q = db.query(Sesion).filter(Sesion.session_id == session_id)
+    if user_id:
+        q = q.filter(Sesion.user_id == user_id)
+    sesion = q.first()
     if not sesion:
         db.close()
         return False
@@ -166,9 +205,12 @@ def toggle_pin_sesion(session_id: str) -> bool:
     return sesion.pinned
 
 
-def buscar_sesiones(query: str = "", limite: int = 50):
+def buscar_sesiones(query: str = "", limite: int = 50, user_id: str | None = None):
     db = SessionLocal()
-    q = db.query(Sesion).order_by(Sesion.actualizado_en.desc())
+    q = db.query(Sesion)
+    if user_id:
+        q = q.filter(Sesion.user_id == user_id)
+    q = q.order_by(Sesion.actualizado_en.desc())
     if query:
         q = q.filter(Sesion.titulo.ilike(f"%{query}%"))
     resultados = q.limit(limite).all()
@@ -220,9 +262,12 @@ def eliminar_carpeta(id: int):
     db.close()
 
 
-def listar_notas(carpeta_id: int | None = None, query: str = ""):
+def listar_notas(carpeta_id: int | None = None, query: str = "", user_id: str | None = None):
     db = SessionLocal()
-    q = db.query(Nota).order_by(Nota.actualizado_en.desc())
+    q = db.query(Nota)
+    if user_id:
+        q = q.filter(Nota.user_id == user_id)
+    q = q.order_by(Nota.actualizado_en.desc())
     if carpeta_id:
         q = q.filter(Nota.carpeta_id == carpeta_id)
     if query:
@@ -233,9 +278,15 @@ def listar_notas(carpeta_id: int | None = None, query: str = ""):
     return resultado
 
 
-def crear_nota(titulo: str, contenido: str, session_id: str | None = None, carpeta_id: int = 1):
+def crear_nota(titulo: str, contenido: str, session_id: str | None = None, carpeta_id: int = 1, user_id: str | None = None):
     db = SessionLocal()
-    nota = Nota(titulo=titulo, contenido=contenido, session_id=session_id, carpeta_id=carpeta_id)
+    nota = Nota(
+        titulo=titulo,
+        contenido=contenido,
+        session_id=session_id,
+        carpeta_id=carpeta_id,
+        user_id=user_id
+    )
     db.add(nota)
     db.commit()
     db.refresh(nota)
@@ -243,16 +294,22 @@ def crear_nota(titulo: str, contenido: str, session_id: str | None = None, carpe
     return nota
 
 
-def obtener_nota(id: int):
+def obtener_nota(id: int, user_id: str | None = None):
     db = SessionLocal()
-    nota = db.query(Nota).filter(Nota.id == id).first()
+    q = db.query(Nota).filter(Nota.id == id)
+    if user_id:
+        q = q.filter(Nota.user_id == user_id)
+    nota = q.first()
     db.close()
     return nota
 
 
-def actualizar_nota(id: int, titulo: str | None = None, contenido: str | None = None):
+def actualizar_nota(id: int, titulo: str | None = None, contenido: str | None = None, user_id: str | None = None):
     db = SessionLocal()
-    nota = db.query(Nota).filter(Nota.id == id).first()
+    q = db.query(Nota).filter(Nota.id == id)
+    if user_id:
+        q = q.filter(Nota.user_id == user_id)
+    nota = q.first()
     if nota:
         if titulo is not None:
             nota.titulo = titulo
@@ -264,9 +321,12 @@ def actualizar_nota(id: int, titulo: str | None = None, contenido: str | None = 
     return nota
 
 
-def eliminar_nota(id: int):
+def eliminar_nota(id: int, user_id: str | None = None):
     db = SessionLocal()
-    nota = db.query(Nota).filter(Nota.id == id).first()
+    q = db.query(Nota).filter(Nota.id == id)
+    if user_id:
+        q = q.filter(Nota.user_id == user_id)
+    nota = q.first()
     if nota:
         db.delete(nota)
         db.commit()
