@@ -3,6 +3,7 @@ uvicorn
 python-dotenv
 pydantic
 sqlalchemy
+pdfplumber
 langchain-core
 langchain-google-genai
 langchain-ollama
