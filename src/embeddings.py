@@ -14,6 +14,6 @@ def obtener_modelo():
     else:
         # Usa Gemini cuando estás en Render o producción
         return GoogleGenerativeAIEmbeddings(
-            model="models/text-embedding-004",
+            model="text-embedding-004", # Sin el prefijo "models/"
             google_api_key=os.getenv("GEMINI_API_KEY")
         )
