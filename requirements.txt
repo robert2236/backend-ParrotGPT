@@ -5,6 +5,7 @@ pydantic
 sqlalchemy
 pdfplumber
 langchain-core
+langchain-text-splitters
 langchain-google-genai
 langchain-ollama
 google-genai
