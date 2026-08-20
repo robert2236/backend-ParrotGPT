@@ -6,6 +6,7 @@ sqlalchemy
 pdfplumber
 langchain-core
 langchain-text-splitters
+langchain-chroma
 langchain-google-genai
 langchain-ollama
 google-genai
