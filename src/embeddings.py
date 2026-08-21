@@ -2,7 +2,7 @@ import os
 from functools import lru_cache
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_ollama import OllamaEmbeddings
-from langchain_huggingface import HuggingFaceEmbeddings
+""" from langchain_huggingface import HuggingFaceEmbeddings """
 
 # Cambia a True en tu .env local si quieres usar Ollama
 USE_LOCAL = os.getenv("USE_LOCAL_LLM", "false").lower() == "true"
@@ -14,12 +14,13 @@ def obtener_modelo():
         return OllamaEmbeddings(model="nomic-embed-text")
     else:
         # Usa Gemini cuando estás en Render o producción
-        """ return GoogleGenerativeAIEmbeddings(
+        return GoogleGenerativeAIEmbeddings(
             model="gemini-embedding-001", # Sin el prefijo "models/"
             google_api_key=os.getenv("GEMINI_API_KEY")
-        ) """
-        return HuggingFaceEmbeddings(
+        )
+
+"""  return HuggingFaceEmbeddings(
             model_name="all-MiniLM-L6-v2",
             model_kwargs={'device': 'cpu'},
             encode_kwargs={'normalize_embeddings': True}
-        )
+        ) """

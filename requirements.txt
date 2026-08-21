@@ -18,5 +18,5 @@ requests
 cryptography
 pyjwt[crypto]
 psycopg2-binary
-langchain-huggingface
-sentence-transformers
+#langchain-huggingface
+#sentence-transformers
