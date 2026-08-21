@@ -6,14 +6,16 @@ from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 from src.config import RAIZ
 
-# 1. Obtener la URL desde variables de entorno
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if DATABASE_URL:
-    # Render entrega URLs con 'postgres://', pero SQLAlchemy requiere 'postgresql://'
+    # Render entrega URLs con 'postgres://' o 'postgresql://'.
+    # Forzamos el uso de 'postgresql+psycopg2://' para SQLAlchemy.
     if DATABASE_URL.startswith("postgres://"):
-        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgres://", 1)
-        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+    elif DATABASE_URL.startswith("postgresql://"):
+        DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg2://", 1)
+        
     engine = create_engine(DATABASE_URL)
 else:
     # Fallback local usando SQLite
