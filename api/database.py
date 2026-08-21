@@ -1,7 +1,7 @@
 import os
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine, text
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 
 from src.config import RAIZ
@@ -92,23 +92,20 @@ class Nota(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
-    
-    # Manejo dinámico de columas en tablas según el motor (SQLite o PostgreSQL)
-    try:
-        with engine.connect() as conn:
-            if engine.name == "sqlite":
-                conn.execute(text("ALTER TABLE sesiones ADD COLUMN pinned BOOLEAN DEFAULT 0"))
-                conn.execute(text("ALTER TABLE sesiones ADD COLUMN user_id VARCHAR"))
-                conn.execute(text("ALTER TABLE mensajes ADD COLUMN user_id VARCHAR"))
-                conn.execute(text("ALTER TABLE notas ADD COLUMN user_id VARCHAR"))
-            else:
-                conn.execute(text("ALTER TABLE sesiones ADD COLUMN IF NOT EXISTS pinned BOOLEAN DEFAULT FALSE"))
-                conn.execute(text("ALTER TABLE sesiones ADD COLUMN IF NOT EXISTS user_id VARCHAR"))
-                conn.execute(text("ALTER TABLE mensajes ADD COLUMN IF NOT EXISTS user_id VARCHAR"))
-                conn.execute(text("ALTER TABLE notas ADD COLUMN IF NOT EXISTS user_id VARCHAR"))
-            conn.commit()
-    except Exception:
-        pass
+
+    # Migra tablas existentes sin abortar las columnas siguientes si una ya existe.
+    columnas_requeridas = {
+        "sesiones": {"pinned": "BOOLEAN DEFAULT FALSE", "user_id": "VARCHAR"},
+        "mensajes": {"user_id": "VARCHAR"},
+        "notas": {"user_id": "VARCHAR"},
+    }
+    inspector = inspect(engine)
+    for tabla, columnas in columnas_requeridas.items():
+        existentes = {columna["name"] for columna in inspector.get_columns(tabla)}
+        for columna, tipo in columnas.items():
+            if columna not in existentes:
+                with engine.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE {tabla} ADD COLUMN {columna} {tipo}"))
 
     db = SessionLocal()
     try:

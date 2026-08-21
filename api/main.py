@@ -148,7 +148,7 @@ def ask(req: AskRequest, user_id: str = Depends(get_current_user_id)):
             fuentes=[],
         )
 
-    history = get_history(req.session_id, limit=10)
+    history = get_history(req.session_id, limit=10, user_id=user_id)
     historial_texto = "\n".join(f"{m.rol}: {m.contenido}" for m in history)
 
     prompt = f"""Eres un experto analista de documentos.
@@ -174,9 +174,9 @@ Respuesta:"""
             detail="El servicio de IA (Ollama) no está disponible. Verifica que el servidor esté corriendo.",
         )
 
-    add_message(req.session_id, "user", req.pregunta)
-    add_message(req.session_id, "assistant", respuesta)
-    crear_o_actualizar_sesion(req.session_id, req.pregunta)
+    add_message(req.session_id, "user", req.pregunta, user_id=user_id)
+    add_message(req.session_id, "assistant", respuesta, user_id=user_id)
+    crear_o_actualizar_sesion(req.session_id, req.pregunta, user_id=user_id)
 
     fuentes = [{"contenido": d.page_content, "metadata": d.metadata} for d in docs]
     return AskResponse(respuesta=respuesta, fuentes=fuentes)
@@ -259,9 +259,9 @@ Respuesta:"""
                     detail="El servicio de IA (Ollama) no está disponible. Verifica que el servidor esté corriendo.",
                 )
 
-        add_message(sid, "user", pregunta)
-        add_message(sid, "assistant", respuesta)
-        crear_o_actualizar_sesion(sid, pregunta)
+        add_message(sid, "user", pregunta, user_id=user_id)
+        add_message(sid, "assistant", respuesta, user_id=user_id)
+        crear_o_actualizar_sesion(sid, pregunta, user_id=user_id)
 
     return {
         "respuesta": respuesta,
