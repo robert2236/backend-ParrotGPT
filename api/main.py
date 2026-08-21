@@ -71,11 +71,12 @@ TAMANO_MAXIMO_BYTES = TAMANO_MAXIMO_MB * 1024 * 1024
 _ejecutor = ThreadPoolExecutor(max_workers=2)
 
 
-def _procesar_pdf_sync(ruta: str, sid: str) -> tuple[list, list]:
+def _procesar_pdf_sync(ruta: str, sid: str, user_id: str) -> tuple[list, list]:
     docs = cargar_pdf(ruta)
     fragmentos = fragmentar(docs)
     for frag in fragmentos:
         frag.metadata["session_id"] = sid
+        frag.metadata["user_id"] = user_id
     agregar_documentos(fragmentos)
     return docs, fragmentos
 
@@ -137,7 +138,8 @@ def ask(req: AskRequest, user_id: str = Depends(get_current_user_id)):
             fuentes=[],
         )
 
-    retriever = obtener_retriever(k=RETRIEVER_K, filtro={"session_id": req.session_id})
+    filtro = {"$and": [{"session_id": req.session_id}, {"user_id": user_id}]}
+    retriever = obtener_retriever(k=RETRIEVER_K, filtro=filtro)
     docs = retriever.invoke(req.pregunta)
 
     contexto = formatear_documentos(docs)
@@ -216,7 +218,7 @@ async def upload_pdf(
     try:
         loop = asyncio.get_event_loop()
         docs, fragmentos = await loop.run_in_executor(
-            _ejecutor, _procesar_pdf_sync, ruta, sid
+            _ejecutor, _procesar_pdf_sync, ruta, sid, user_id
         )
     except Exception as e:
         try:
@@ -234,7 +236,8 @@ async def upload_pdf(
     respuesta = ""
 
     if pregunta:
-        retriever = obtener_retriever(k=RETRIEVER_K, filtro={"session_id": sid})
+        filtro = {"$and": [{"session_id": sid}, {"user_id": user_id}]}
+        retriever = obtener_retriever(k=RETRIEVER_K, filtro=filtro)
         docs_resp = retriever.invoke(pregunta)
         contexto = formatear_documentos(docs_resp)
 
@@ -277,7 +280,9 @@ Respuesta:"""
 def estado_upload(session_id: str, user_id: str = Depends(get_current_user_id)):
     from src.vector_store import cargar_bd
     bd = cargar_bd()
-    resultados = bd.get(where={"session_id": session_id, "user_id": user_id})
+    resultados = bd.get(
+        where={"$and": [{"session_id": session_id}, {"user_id": user_id}]}
+    )
     disponible = len(resultados.get("ids", [])) > 0
     nombre_archivo = None
     paginas = None
