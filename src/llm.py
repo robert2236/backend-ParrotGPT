@@ -19,6 +19,7 @@ class LLMManager:
         self.espera = espera
         self._llm = None
         self.modo_actual = None
+        self.ultimo_usage = None
 
     def _conectar(self):
         if self._llm is not None:
@@ -53,6 +54,17 @@ class LLMManager:
                 llm = self._conectar()
                 respuesta = llm.invoke(prompt)
 
+                # Extraer tokens si está disponible (Gemini API)
+                if hasattr(respuesta, "response_metadata"):
+                    try:
+                        usage = respuesta.response_metadata.get("usage", {})
+                        self.ultimo_usage = {
+                            "entrada": usage.get("prompt_tokens", 0),
+                            "salida": usage.get("candidates_tokens", 0) or usage.get("output_tokens", 0),
+                        }
+                    except Exception:
+                        pass
+
                 # Si usamos ChatGoogleGenerativeAI, la respuesta puede ser un objeto AIMessage.
                 # Extraemos el contenido textual limpio:
                 if hasattr(respuesta, "content"):
@@ -74,6 +86,12 @@ class LLMManager:
             f"No se pudo obtener respuesta tras {self.reintentos} intentos. "
             f"Último error: {ultimo_error}"
         )
+    
+    def obtener_ultimo_usage(self) -> dict:
+        """Obtener estadísticas de tokens del último invoke."""
+        if self.ultimo_usage:
+            return self.ultimo_usage
+        return {"entrada": 0, "salida": 0}
 
 
 _instancia: LLMManager | None = None

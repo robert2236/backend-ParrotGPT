@@ -90,6 +90,19 @@ class Nota(Base):
     carpeta = relationship("Carpeta", back_populates="notas")
 
 
+class EstadísticaTokens(Base):
+    __tablename__ = "estadisticas_tokens"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(String, index=True, nullable=True)
+    session_id = Column(String, index=True, nullable=True)
+    tokens_entrada = Column(Integer, default=0)
+    tokens_salida = Column(Integer, default=0)
+    modo = Column(String, default="rag")  # rag, general, hibrido
+    idioma = Column(String, default="es")
+    creado_en = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
 
@@ -146,6 +159,76 @@ def clear_history(session_id: str, user_id: str | None = None):
     q_ses.delete(synchronize_session=False)
     db.commit()
     db.close()
+
+
+def guardar_estadistica_tokens(user_id: str | None, session_id: str, tokens_entrada: int, tokens_salida: int, modo: str, idioma: str):
+    """Guardar estadísticas de tokens en BD."""
+    db = SessionLocal()
+    try:
+        stat = EstadísticaTokens(
+            user_id=user_id,
+            session_id=session_id,
+            tokens_entrada=tokens_entrada,
+            tokens_salida=tokens_salida,
+            modo=modo,
+            idioma=idioma,
+        )
+        db.add(stat)
+        db.commit()
+    finally:
+        db.close()
+
+
+def obtener_estadisticas_tokens(user_id: str | None = None):
+    """Obtener estadísticas de tokens agregadas."""
+    db = SessionLocal()
+    try:
+        q = db.query(EstadísticaTokens)
+        if user_id:
+            q = q.filter(EstadísticaTokens.user_id == user_id)
+        
+        stats = q.all()
+        
+        total_entrada = sum(s.tokens_entrada for s in stats)
+        total_salida = sum(s.tokens_salida for s in stats)
+        total_tokens = total_entrada + total_salida
+        
+        # Costo estimado (Gemini 2.5 Flash: ~$0.075 por M entrada, ~$0.3 por M salida)
+        costo_entrada = (total_entrada / 1_000_000) * 0.075 if total_entrada > 0 else 0
+        costo_salida = (total_salida / 1_000_000) * 0.3 if total_salida > 0 else 0
+        costo_total = costo_entrada + costo_salida
+        
+        # Contar requests por modo
+        requests_por_modo = {}
+        for s in stats:
+            modo = s.modo or "rag"
+            requests_por_modo[modo] = requests_por_modo.get(modo, 0) + 1
+        
+        # Contar requests por idioma
+        requests_por_idioma = {}
+        for s in stats:
+            idioma = s.idioma or "es"
+            requests_por_idioma[idioma] = requests_por_idioma.get(idioma, 0) + 1
+        
+        total_requests = len(stats)
+        tokens_promedio = total_tokens // total_requests if total_requests > 0 else 0
+        entrada_promedio = total_entrada // total_requests if total_requests > 0 else 0
+        salida_promedio = total_salida // total_requests if total_requests > 0 else 0
+        
+        return {
+            "total_tokens_entrada": total_entrada,
+            "total_tokens_salida": total_salida,
+            "total_tokens": total_tokens,
+            "costo_estimado": f"${costo_total:.4f}",
+            "total_requests": total_requests,
+            "requests_por_modo": requests_por_modo,
+            "requests_por_idioma": requests_por_idioma,
+            "tokens_promedio_por_request": tokens_promedio,
+            "tokens_entrada_promedio": entrada_promedio,
+            "tokens_salida_promedio": salida_promedio,
+        }
+    finally:
+        db.close()
 
 
 def crear_o_actualizar_sesion(session_id: str, titulo: str, user_id: str | None = None):

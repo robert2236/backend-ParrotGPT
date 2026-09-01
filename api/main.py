@@ -23,9 +23,11 @@ from api.database import (
     eliminar_sesion,
     get_history,
     get_preference,
+    guardar_estadistica_tokens,
     init_db,
     listar_carpetas,
     listar_notas,
+    obtener_estadisticas_tokens,
     obtener_nota,
     set_preference,
     toggle_pin_sesion,
@@ -38,7 +40,10 @@ from api.schemas import (
     BuscarResponse,
     CarpetaBody,
     CarpetaResponse,
+    ChatRequest,
+    ChatResponse,
     CrearNotaBody,
+    EstadísticasResponse,
     HistorialResponse,
     HistorialItem,
     NotaResponse,
@@ -49,7 +54,7 @@ from src.config import RETRIEVER_K
 from src.embeddings import obtener_modelo
 from src.llm import obtener_llm
 from src.loader import cargar_pdf
-from src.rag import formatear_documentos
+from src.rag import formatear_documentos, obtener_prompt_por_modo
 from src.splitter import fragmentar
 from src.vector_store import agregar_documentos
 from src.vector_store import buscar as buscar_vectorial
@@ -182,6 +187,169 @@ Respuesta:"""
 
     fuentes = [{"contenido": d.page_content, "metadata": d.metadata} for d in docs]
     return AskResponse(respuesta=respuesta, fuentes=fuentes)
+
+
+@app.post("/api/chat", response_model=ChatResponse)
+def chat_mejorado(req: ChatRequest, user_id: str = Depends(get_current_user_id)):
+    """
+    Endpoint mejorado de chat con soporte para múltiples modos e idiomas.
+    
+    Modos disponibles:
+    - 'rag': Solo usa documentos indexados (modo estricto)
+    - 'general': Usa conocimiento general (sin documentos)
+    - 'hibrido': Combina documentos + conocimiento general
+    
+    Idiomas soportados:
+    - 'es': Español
+    - 'en': Inglés
+    - 'fr': Francés
+    - 'de': Alemán
+    """
+    modo = req.modo.lower()
+    idioma = req.idioma.lower()[:2]  # Normalizar a 2 letras
+    
+    if modo not in ["rag", "general", "hibrido"]:
+        raise HTTPException(400, "Modo no válido. Use: 'rag', 'general' o 'hibrido'")
+    
+    if idioma not in ["es", "en", "fr", "de"]:
+        raise HTTPException(400, "Idioma no soportado. Use: 'es', 'en', 'fr' o 'de'")
+
+    # ========== VALIDACIÓN DE DOCUMENTOS ==========
+    docs_disponibles = False
+    contexto = ""
+    docs = []
+    
+    if modo in ["rag", "hibrido"]:
+        from src.vector_store import cargar_bd
+        try:
+            bd = cargar_bd()
+            hay_docs = bd._collection.count() > 0
+            docs_disponibles = hay_docs
+        except Exception:
+            docs_disponibles = False
+
+        if modo == "rag" and not docs_disponibles:
+            mensajes_error = {
+                "es": "❌ No hay documentos indexados. Modo 'rag' requiere documentos. Sube un PDF primero.",
+                "en": "❌ No indexed documents. RAG mode requires documents. Upload a PDF first.",
+                "fr": "❌ Aucun document indexé. Le mode RAG nécessite des documents. Veuillez d'abord télécharger un PDF.",
+                "de": "❌ Keine indizierten Dokumente. RAG-Modus erfordert Dokumente. Bitte laden Sie zuerst eine PDF-Datei hoch.",
+            }
+            return ChatResponse(
+                respuesta=mensajes_error.get(idioma, mensajes_error["es"]),
+                modo_usado="rag",
+                fuentes=[],
+            )
+
+        # ========== RECUPERACIÓN DE CONTEXTO ==========
+        if docs_disponibles:
+            filtro = {"$and": [{"session_id": req.session_id}, {"user_id": user_id}]}
+            retriever = obtener_retriever(k=RETRIEVER_K, filtro=filtro)
+            docs = retriever.invoke(req.pregunta)
+            contexto = formatear_documentos(docs)
+
+    # ========== OBTENCIÓN DEL PROMPT DINÁMICO ==========
+    template_prompt = obtener_prompt_por_modo(modo, idioma)
+    
+    # ========== CONSTRUCCIÓN DE HISTORIAL ==========
+    history = get_history(req.session_id, limit=10, user_id=user_id)
+    historial_texto = "\n".join(f"{m.rol}: {m.contenido}" for m in history)
+
+    # ========== CONSTRUCCIÓN DEL PROMPT FINAL ==========
+    if modo == "general":
+        # Para modo general, no incluir contexto de documentos
+        prompt_final = template_prompt.format(
+            historial=historial_texto,
+            input=req.pregunta,
+        )
+    else:
+        # Para rag e híbrido, incluir contexto
+        prompt_final = template_prompt.format(
+            context=contexto if contexto else "[No relevant documents found]" if idioma == "en" else "[Ningún documento relevante encontrado]",
+            historial=historial_texto,
+            input=req.pregunta,
+        )
+
+    # ========== GENERACIÓN DE RESPUESTA ==========
+    llm = obtener_llm()
+    try:
+        respuesta = llm.invoke(prompt_final)
+    except ConnectionError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Servicio de IA no disponible: {str(e)}",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generando respuesta: {str(e)}",
+        )
+
+    # ========== OBTENER ESTADÍSTICAS DE TOKENS ==========
+    tokens_usados = llm.obtener_ultimo_usage()
+    if not tokens_usados["entrada"] and not tokens_usados["salida"]:
+        # Fallback si Gemini no retorna tokens (usar conteo aproximado)
+        tokens_usados = {
+            "entrada": len(req.pregunta.split()),
+            "salida": len(respuesta.split()),
+        }
+
+    # ========== GUARDAR EN HISTORIAL ==========
+    add_message(req.session_id, "user", req.pregunta, user_id=user_id)
+    add_message(req.session_id, "assistant", respuesta, user_id=user_id)
+    crear_o_actualizar_sesion(req.session_id, req.pregunta, user_id=user_id)
+
+    # ========== GUARDAR ESTADÍSTICAS DE TOKENS ==========
+    try:
+        guardar_estadistica_tokens(
+            user_id=user_id,
+            session_id=req.session_id,
+            tokens_entrada=tokens_usados.get("entrada", 0),
+            tokens_salida=tokens_usados.get("salida", 0),
+            modo=modo,
+            idioma=idioma,
+        )
+    except Exception as e:
+        print(f"⚠️ Error al guardar estadísticas de tokens: {e}")
+
+    # ========== PREPARAR FUENTES ==========
+    fuentes = []
+    if req.incluir_fuentes and docs_disponibles and modo in ["rag", "hibrido"]:
+        try:
+            fuentes = [{"contenido": d.page_content, "metadata": d.metadata} for d in docs]
+        except Exception:
+            pass
+
+    return ChatResponse(
+        respuesta=respuesta,
+        modo_usado=modo,
+        fuentes=fuentes,
+        tokens_usados=tokens_usados,
+    )
+
+
+@app.get("/api/stats", response_model=EstadísticasResponse)
+def obtener_stats(user_id: str | None = None):
+    """
+    Endpoint para obtener estadísticas de tokens consumidos.
+    
+    Parámetros:
+    - user_id (opcional): Si se proporciona, retorna estadísticas solo de ese usuario.
+    
+    Retorna:
+    - total_tokens_entrada: Total de tokens de entrada
+    - total_tokens_salida: Total de tokens de salida
+    - total_tokens: Total combinado
+    - costo_estimado: Costo aproximado en USD (Gemini 2.5 Flash pricing)
+    - total_requests: Total de requests realizados
+    - requests_por_modo: Desglose por modo (rag, general, hibrido)
+    - requests_por_idioma: Desglose por idioma (es, en, fr, de)
+    - tokens_promedio_por_request: Promedio de tokens totales
+    - tokens_entrada_promedio: Promedio de tokens entrada
+    - tokens_salida_promedio: Promedio de tokens salida
+    """
+    stats = obtener_estadisticas_tokens(user_id=user_id)
+    return EstadísticasResponse(**stats)
 
 
 @app.post("/api/buscar", response_model=BuscarResponse)
